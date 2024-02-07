@@ -2,6 +2,7 @@ package main
 
 import "fmt"
 import "time"
+import "context"
 import "encoding/json"
 // import "io/ioutil"
 import "net/http"
@@ -12,9 +13,85 @@ type Message struct {
     Text string `json:text`
     Timestamp time.Time 
 }
-var chat = make([]Message,0)
 
-var messageEvents = make(chan Message);
+type BroadcastServer interface {
+  Subscribe() <-chan Message
+  CancelSubscription(<-chan Message)
+}
+
+type broadcastServer struct {
+  source <-chan Message
+  listeners []chan Message
+  addListener chan chan Message
+  removeListener chan (<-chan Message)
+}
+
+func (s *broadcastServer) Subscribe() <-chan Message {
+  newListener := make(chan Message)
+  s.addListener <- newListener
+  return newListener
+}
+
+
+func (s *broadcastServer) CancelSubscription(channel <-chan Message) {
+  s.removeListener <- channel
+}
+
+func NewBroadcastServer(ctx context.Context, source <-chan Message) BroadcastServer {
+  service := &broadcastServer{
+    source: source,
+    listeners: make([]chan Message, 0),
+    addListener: make(chan chan Message),
+    removeListener: make(chan (<-chan Message)),
+  }
+  go service.serve(ctx)
+  return service
+}
+
+func (s *broadcastServer) serve(ctx context.Context) {
+  defer func () {
+    for _, listener := range s.listeners {
+      if listener != nil {
+          close(listener)
+      }
+    }
+  } ()
+
+  for {
+    select {
+      case <-ctx.Done():
+        return
+      case newListener := <- s.addListener:
+        s.listeners = append(s.listeners, newListener)
+      case listenerToRemove := <- s.removeListener:
+        for i, ch := range s.listeners {
+          if ch == listenerToRemove {
+              s.listeners[i] = s.listeners[len(s.listeners)-1]
+              s.listeners = s.listeners[:len(s.listeners)-1]
+              close(ch)
+              break
+          }
+        }
+      case val, ok := <-s.source:
+        if !ok {
+          return
+        }
+        for _, listener := range s.listeners {
+          if listener != nil {
+            select {
+             case listener <- val:
+             case <-ctx.Done():
+              return
+            }
+            
+          }
+        }
+    }
+  }
+}
+
+var chat = make([]Message, 0)
+
 
 func headers(w http.ResponseWriter, req *http.Request) {
     for name, headers := range req.Header {
@@ -25,46 +102,49 @@ func headers(w http.ResponseWriter, req *http.Request) {
     }
 }
 
-func postMessage(w http.ResponseWriter, req *http.Request) {
-    switch req.Method {
-    case http.MethodGet:
-        fmt.Println("GET: /messages")
-        for i,v := range chat[max(0,len(chat)-10):] {
-            fmt.Fprintf(w, "<li id=\"%d\"><span>%s</span>%s</li>", i, v.Timestamp.Format("15:04:05.99"), v.Text)
+func postMessageHandler(messageEvents chan<- Message) (func(http.ResponseWriter, *http.Request)) {
+    fn := func(w http.ResponseWriter, req *http.Request) {
+        switch req.Method {
+        case http.MethodGet:
+            fmt.Println("GET: /messages")
+            for i,v := range chat[max(0,len(chat)-10):] {
+                fmt.Fprintf(w, "<li id=\"%d\"><span>%s</span>%s</li>", i, v.Timestamp.Format("15:04:05.99"), v.Text)
+            }
+            // Serve the resource.
+        case http.MethodPost:
+            // Create a new record.
+            fmt.Println("POST: /messages")
+            dec := json.NewDecoder(req.Body);
+
+            var message Message
+
+            err:= dec.Decode(&message)
+            if err != nil {
+                w.WriteHeader(400)
+                fmt.Fprintf(w, "Decode Error")
+                return
+            }
+
+            message.Timestamp = time.Now()
+            chat = append(chat,message)
+            messageEvents <- message
+            fmt.Fprint(w, `
+            <input type="hidden" name="id" value="acorn1">
+            <input type="text" name="text" placeholder="type a message...">
+
+            `)
+            fmt.Println(message.Id)
+            fmt.Println(message.Text)
+        case http.MethodPut:
+            // Update an existing record.
+        case http.MethodDelete:
+            // Remove the record.
+        default:
+            http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
         }
-        // Serve the resource.
-    case http.MethodPost:
-        // Create a new record.
-        fmt.Println("POST: /messages")
-        dec := json.NewDecoder(req.Body);
 
-        var message Message
-
-        err:= dec.Decode(&message)
-        if err != nil {
-            w.WriteHeader(400)
-            fmt.Fprintf(w, "Decode Error")
-            return
-        }
-
-        message.Timestamp = time.Now()
-        chat = append(chat,message)
-        messageEvents <- message
-        fmt.Fprint(w, `
-<input type="hidden" name="id" value="acorn1">
-<input type="text" name="text" placeholder="type a message...">
-
-        `)
-        fmt.Println(message.Id)
-        fmt.Println(message.Text)
-    case http.MethodPut:
-        // Update an existing record.
-    case http.MethodDelete:
-        // Remove the record.
-    default:
-        http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
     }
-
+    return fn
 }
 
 func html(w http.ResponseWriter, req *http.Request) {
@@ -80,6 +160,7 @@ func html(w http.ResponseWriter, req *http.Request) {
 <script>
 htmx.on("htmx:afterSwap", function(evt) {
     document.querySelector("input").focus();
+}
 </script>
 <div id="chat-root">
 <div hx-ext="sse" sse-connect="/events">
@@ -107,45 +188,57 @@ func formatSSE(message Message) (string, error) {
 
 	return sb.String(), nil
 }
-func events(w http.ResponseWriter, r *http.Request) {
-        
-    fmt.Println("establishing SSE connection")
-    w.Header().Set("Content-Type", "text/event-stream")
+func eventsHandler(server BroadcastServer) (func(http.ResponseWriter, *http.Request)) {
+    fn := func(w http.ResponseWriter, r *http.Request) {
 
-    flusher, ok := w.(http.Flusher)
-    if !ok {
-        http.Error(w, "SSE not supported", http.StatusInternalServerError)
-        return
-    }
+        fmt.Println("establishing SSE connection")
+        w.Header().Set("Content-Type", "text/event-stream")
 
-    for {
-        select {
-        case <-r.Context().Done():
+        flusher, ok := w.(http.Flusher)
+        if !ok {
+            http.Error(w, "SSE not supported", http.StatusInternalServerError)
             return
-        case message := <- messageEvents:
-            event, err := formatSSE(message)
-            if err != nil {
-                fmt.Println(err)
-                break
-            }
+        }
 
-            _, err = fmt.Fprint(w, event)
-            if err != nil {
-                fmt.Println(err)
-                break;
+        listener := server.Subscribe()
+
+        for {
+            select {
+            case <-r.Context().Done():
+                return
+            case message := <- listener:
+                event, err := formatSSE(message)
+                if err != nil {
+                    fmt.Println(err)
+                    break
+                }
+
+                _, err = fmt.Fprint(w, event)
+                if err != nil {
+                    fmt.Println(err)
+                    break;
+                }
+                fmt.Println("Flushing...")
+                flusher.Flush()
             }
-            fmt.Println("Flushing...")
-            flusher.Flush()
         }
     }
+    return fn
 }
 
 func main() {
+    ctx, cancel := context.WithCancel(context.Background())
+
+    defer cancel()
+    
+    messageEvents := make(chan Message);
+
+    chatBroadcaster := NewBroadcastServer(ctx, messageEvents)
 
     fmt.Println("¿Qué pasa?")
-    http.HandleFunc("/messages", postMessage)
+    http.HandleFunc("/messages", postMessageHandler(messageEvents))
     http.HandleFunc("/headers", headers)
-    http.HandleFunc("/events", events)
+    http.HandleFunc("/events", eventsHandler(chatBroadcaster))
     http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
     http.HandleFunc("/html", html)
     //http.HandeFunc("/messages", postMessage)
