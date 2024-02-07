@@ -1,0 +1,35 @@
+* {
+    margin:0;
+    padding:0;
+}
+html {
+    background-color: blue;
+    font-family: system-ui;
+}
+
+
+div#chat-root {
+    margin: 1rem;
+    background-color : #212121B7;
+    color: white;
+}
+
+ul#messages {
+    list-style: none;
+}
+
+ul#messages > li {
+    padding: 0.5rem 1rem;
+}
+
+ul#messages > li > span {
+    font-family: 'Courier New', Courier, monospace;
+    font-size: .8rem
+}
+
+input {
+    background-color: transparent;
+    width: 100%;
+    color: white;
+    padding: 1rem;
+}
