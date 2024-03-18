@@ -1,35 +1,62 @@
 * {
     margin:0;
     padding:0;
+    border:0;
 }
+
+:root {
+    --color-text: oklch(.75 0.15 65);;
+    --color-ts: oklch(.6 0.483 55);;
+}
+
 html {
-    background-color: blue;
+    background-color: oklch(0.25 0.05 280);
     font-family: system-ui;
 }
 
-
 div#chat-root {
     margin: 1rem;
-    background-color : #212121B7;
-    color: white;
+    background-color: oklch(0.3 .1 280);
+    color: var(--color-text); 
+    padding: 1rem;
+    border-radius: .5rem;
 }
 
-ul#messages {
-    list-style: none;
-}
+div.chat-messages {
+    display: grid; 
+    grid-template-columns: 6rem 6rem 1fr;
 
-ul#messages > li {
-    padding: 0.5rem 1rem;
-}
+    > .message {
+        padding: 0.5rem 1rem;
+        grid-column: 1/-1;
+        display: grid;
+        grid-template-columns: subgrid;
 
-ul#messages > li > span {
-    font-family: 'Courier New', Courier, monospace;
-    font-size: .8rem
+        > .timestamp {
+            font-family: 'Fira Code', 'Fira Mono', 'Courier New', Courier, monospace;
+            font-size: .8rem;
+            color: var(--color-ts);
+        }
+
+        > .text {
+            color:color-mix(in oklch, var(--color-text), white 50%);
+            grid-column-start: -1;
+        }
+    }
 }
 
 input {
     background-color: transparent;
     width: 100%;
-    color: white;
-    padding: 1rem;
+    color: var(--color-text);
+    padding-inline: 1rem;
+    padding-block: .5rem;
+    border-radius: .5rem;
+    box-shadow: 
+        2px 2px 0 0 var(--color-ts),
+        0 0 3px 1px inset var(--color-text);
+    border: 1px solid var(--color-ts);
+    &::placeholder {
+        color: color-mix(in oklch, var(--color-text), grey 50%);
+    }
 }

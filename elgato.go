@@ -1,12 +1,16 @@
 package main
 
-import "fmt"
-import "time"
-import "context"
-import "encoding/json"
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"strings"
+	"time"
+)
+
 // import "io/ioutil"
-import "net/http"
-import "strings"
 
 type Message struct {
     Id string `json:id` 
@@ -93,56 +97,45 @@ func (s *broadcastServer) serve(ctx context.Context) {
 var chat = make([]Message, 0)
 
 
-func headers(w http.ResponseWriter, req *http.Request) {
-    for name, headers := range req.Header {
-        for _, h := range headers {
-            fmt.Fprintf(w, "%v: %v\n", name, h)
-            fmt.Printf("%v: %v\n", name, h)
-        }
+func getMessageHandler(w http.ResponseWriter, req *http.Request) {
+    fmt.Println("GET: /messages")
+    for i,v := range chat[max(0,len(chat)-10):] {
+        fmt.Fprintf(
+            w,
+            "<div class=\"message\" id=\"%d\"><div class=\"timestamp\">%s</div><div class=\"user\">%s</div><div class=\"text\">%s</div></div>",
+            i,
+            v.Timestamp.Format("15:04:05"),
+            "acorn1",
+            v.Text,
+        )
     }
 }
 
 func postMessageHandler(messageEvents chan<- Message) (func(http.ResponseWriter, *http.Request)) {
     fn := func(w http.ResponseWriter, req *http.Request) {
-        switch req.Method {
-        case http.MethodGet:
-            fmt.Println("GET: /messages")
-            for i,v := range chat[max(0,len(chat)-10):] {
-                fmt.Fprintf(w, "<li id=\"%d\"><span>%s</span>%s</li>", i, v.Timestamp.Format("15:04:05.99"), v.Text)
-            }
-            // Serve the resource.
-        case http.MethodPost:
-            // Create a new record.
-            fmt.Println("POST: /messages")
-            dec := json.NewDecoder(req.Body);
+        // Create a new record.
+        fmt.Println("POST: /messages")
+        dec := json.NewDecoder(req.Body);
 
-            var message Message
+        var message Message
 
-            err:= dec.Decode(&message)
-            if err != nil {
-                w.WriteHeader(400)
-                fmt.Fprintf(w, "Decode Error")
-                return
-            }
-
-            message.Timestamp = time.Now()
-            chat = append(chat,message)
-            messageEvents <- message
-            fmt.Fprint(w, `
-            <input type="hidden" name="id" value="acorn1">
-            <input type="text" name="text" placeholder="type a message...">
-
-            `)
-            fmt.Println(message.Id)
-            fmt.Println(message.Text)
-        case http.MethodPut:
-            // Update an existing record.
-        case http.MethodDelete:
-            // Remove the record.
-        default:
-            http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+        err:= dec.Decode(&message)
+        if err != nil {
+            w.WriteHeader(400)
+            fmt.Fprintf(w, "Decode Error")
+            return
         }
 
+        message.Timestamp = time.Now()
+        chat = append(chat,message)
+        messageEvents <- message
+        fmt.Fprint(w, `
+        <input type="hidden" name="id" value="acorn1">
+        <input type="text" name="text" placeholder="type a message...">
+
+        `)
+        fmt.Println(message.Id)
+        fmt.Println(message.Text)
     }
     return fn
 }
@@ -157,24 +150,15 @@ func html(w http.ResponseWriter, req *http.Request) {
     <script src="https://unpkg.com/htmx.org/dist/ext/sse.js"></script>
 </head>
 <body>
-<script>
-htmx.on("htmx:afterSwap", function(evt) {
-    document.querySelector("input").focus();
-}
-</script>
 <div id="chat-root">
 <div hx-ext="sse" sse-connect="/events">
-<ul id="messages" hx-get="/messages" hx-trigger="load,sse:new-messages">
-</ul>
+<div class="chat-messages" hx-get="/messages" hx-trigger="load,sse:new-messages">
 </div>
-<!--div hx-ext="sse" sse-connect="/events" sse-swap="new-messages">
-      Contents of this box will be updated in real time
-      with every SSE message received from the chatroom.
-  </div-->
-
+</div>
 <form action="POST" hx-post="/messages" hx-ext="json-enc" hx-swap="innerHTML">
 <input type="hidden" name="id" value="acorn1">
 <input type="text" name="text" placeholder="type a message...">
+</form>
 </div>
 </body>
 </html>`)
@@ -201,10 +185,11 @@ func eventsHandler(server BroadcastServer) (func(http.ResponseWriter, *http.Requ
         }
 
         listener := server.Subscribe()
-
+        
         for {
             select {
             case <-r.Context().Done():
+                server.CancelSubscription(listener)
                 return
             case message := <- listener:
                 event, err := formatSSE(message)
@@ -236,12 +221,31 @@ func main() {
     chatBroadcaster := NewBroadcastServer(ctx, messageEvents)
 
     fmt.Println("¿Qué pasa?")
-    http.HandleFunc("/messages", postMessageHandler(messageEvents))
-    http.HandleFunc("/headers", headers)
+    http.HandleFunc("GET /messages", getMessageHandler)
+    http.HandleFunc("POST /messages", postMessageHandler(messageEvents))
     http.HandleFunc("/events", eventsHandler(chatBroadcaster))
     http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
     http.HandleFunc("/html", html)
+    http.HandleFunc("/login", loginHandler)
     //http.HandeFunc("/messages", postMessage)
 
-    http.ListenAndServe(":4090", nil)
+    fmt.Println("Listening on :4090")
+    log.Fatal(http.ListenAndServe(":4090", nil))
+    fmt.Println("¿over?")
+}
+// A Simple handler to login and set a session cookie on the client.
+func loginHandler(w http.ResponseWriter, r *http.Request) {
+    // Store a session in the server.
+
+
+
+    // Set a cookie on the client.
+    http.SetCookie(w, &http.Cookie{
+        Name:  "session",
+        Value: "acorn",
+    })
+
+
+
+    fmt.Println("Login")
 }
